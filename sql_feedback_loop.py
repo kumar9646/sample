@@ -54,42 +54,72 @@ llm = ChatOpenAI(model="gpt-4", temperature=0)
 sql_chain = create_sql_query_chain(llm, meeting_db)
 
 
-# ✅ Step 7: Function to Validate and Refine SQL Query
-def validate_and_refine_sql(user_question, chat_history, max_attempts=5):
-    """Refines the SQL query up to `max_attempts` times until it's valid."""
-    for attempt in range(max_attempts):
-        # Step 1: Generate SQL Query
-        sql_query = sql_chain.invoke({"question": user_question, "chat_history": chat_history})
+# ✅ Step 7: Function to Generate & Validate SQL Query in a Loop
+def generate_valid_sql_query(user_question, chat_history, max_attempts=5):
+    """Generates and refines an SQL query up to `max_attempts` times until it's correct."""
 
-        # Step 2: Ask LLM if the SQL Query is Correct
+    for attempt in range(1, max_attempts + 1):
+        print(f"🔄 Attempt {attempt}: Generating SQL Query...")
+
+        # Step 1: Generate SQL Query
+        prompt = f"""
+        You are an expert SQL generator for a meeting database. 
+        Your task is to generate the most accurate SQL query based on the user's question and chat history.
+
+        - **Chat History (for context):**  
+        {chat_history}
+
+        - **User Question:**  
+        {user_question}
+
+        **Instructions:**  
+        1. Ensure the query retrieves relevant meeting details.  
+        2. If the user references a previous project or topic, infer it from the chat history.  
+        3. Optimize the query for efficiency.  
+        4. Return **only the SQL query** with no explanation.  
+
+        Now, generate the correct SQL query:
+        """
+        sql_query = sql_chain.invoke(prompt).strip()
+
+        # Step 2: Ask LLM to Validate the Query
         validation_prompt = f"""
-        You are an expert SQL validator. Given the following query:
+        You are an expert SQL validator. Given the SQL query below, check if it correctly answers the user's question.
+
+        - **SQL Query:**  
         {sql_query}
 
-        - Check if the query is correct and relevant to the question: "{user_question}".
-        - Ensure it retrieves the right information from the database.
-        - If incorrect, suggest improvements.
+        - **User Question:**  
+        {user_question}
 
-        Return "VALID" if correct, or a corrected query.
+        **Validation Rules:**  
+        1. Does the query retrieve relevant data?  
+        2. Does it correctly reference previous topics if needed?  
+        3. Is it free of syntax errors?  
+        4. If incorrect, suggest an improved query.  
+
+        If correct, return **"VALID"**. Otherwise, return a corrected SQL query.
         """
         validation_response = llm.invoke(validation_prompt).strip()
 
-        # Step 3: If LLM says "VALID", use the query; otherwise, refine it
+        # Step 3: If Valid, Return the Query; Otherwise, Retry
         if validation_response == "VALID":
-            return sql_query  # Use the validated query
+            print(f"✅ Attempt {attempt}: Query validated successfully!")
+            return sql_query
         else:
-            print(f"Attempt {attempt + 1}: Refining SQL Query...")
-            sql_query = validation_response  # Update query with LLM's correction
+            print(f"⚠️ Attempt {attempt}: Query corrected, retrying...")
+            sql_query = validation_response  # Use the corrected query
 
-    print("Maximum validation attempts reached. Using last refined SQL query.")
+    print("❌ Maximum validation attempts reached. Using last refined SQL query.")
     return sql_query  # Return the last refined query even if not marked "VALID"
 
 
-# ✅ Step 8: Define the Runnable Chain with Validation Loop
+# ✅ Step 8: Define the Runnable Chain
 chain = RunnablePassthrough.assign(
     chat_history=RunnableLambda(lambda _: get_chat_history(5))  # Retrieve last 5 chat messages
 ).assign(
-    query=lambda inputs: validate_and_refine_sql(inputs["input"], inputs["chat_history"])  # Generate & refine SQL Query
+    query=lambda inputs: generate_valid_sql_query(inputs["input"], inputs["chat_history"])
+    # Generate & validate SQL Query
 ).assign(
     result=itemgetter("query") | RunnableLambda(lambda q: meeting_db.run(q))  # Execute SQL Query
 ).assign(
