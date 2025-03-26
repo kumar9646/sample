@@ -3,6 +3,7 @@ from operator import itemgetter
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_openai import ChatOpenAI
 from langchain_community.utilities import SQLDatabase
+from langchain_experimental.sql import create_sql_query_chain
 from langchain_core.output_parsers import StrOutputParser
 
 # ✅ Step 1: Setup Databases
@@ -46,28 +47,32 @@ def get_chat_history(limit=5):
     return "\n".join([f"User: {user}\nBot: {bot}" for user, bot in reversed(chat_history)])
 
 
-# ✅ Step 5: Modify `extract_sql_query` to Use Chat History
+# ✅ Step 5: Define SQL Query Generation Using LLM
 def extract_sql_query(inputs):
-    """Generates an SQL query dynamically, considering previous context."""
+    """Uses LLM to dynamically generate SQL queries based on user input & chat history."""
     user_input = inputs["input"]
     chat_history = inputs["chat_history"]
 
-    # Example Rule: If "above project" is mentioned, extract project name from chat history
-    if "above project" in user_input.lower():
-        last_project_query = None
-        for line in chat_history.split("\n"):
-            if "project" in line.lower():
-                last_project_query = line.split(":")[-1].strip()
-                break
+    # Rule-based prompt to instruct LLM
+    prompt = f"""
+    You are an expert SQL query generator for a meeting database. Given the user's question and previous chat history,
+    generate the most relevant SQL query to fetch the required information.
 
-        if last_project_query:
-            user_input = user_input.replace("above project", last_project_query)
+    - Chat History (context): 
+    {chat_history}
 
-    # Example SQL generation rule
-    if "key points" in user_input.lower():
-        return f"SELECT key_points FROM meetings WHERE project_name LIKE '%{user_input.split()[-1]}%' ORDER BY date DESC LIMIT 1;"
+    - User Question: {user_input}
 
-    return "SELECT * FROM meetings LIMIT 5;"  # Default query
+    Follow these rules:
+    1. Ensure the query retrieves relevant meeting details.
+    2. If the user references something discussed earlier, infer it from the chat history.
+    3. Avoid unnecessary complexity; keep queries optimized.
+
+    Return only the SQL query without any explanation.
+    """
+
+    # Generate SQL query using LLM
+    return llm.invoke(prompt).strip()
 
 
 # ✅ Step 6: Function to Execute SQL Query
@@ -83,11 +88,11 @@ def execute_query(query):
 # ✅ Step 7: Initialize LLM (GPT-4)
 llm = ChatOpenAI(model="gpt-4", temperature=0)
 
-# ✅ Step 8: Define the Chain
+# ✅ Step 8: Define the Runnable Chain
 chain = RunnablePassthrough.assign(
     chat_history=RunnableLambda(lambda _: get_chat_history(5))  # Get last 5 interactions
 ).assign(
-    query=RunnableLambda(extract_sql_query)  # Generate SQL Query based on chat history
+    query=RunnableLambda(extract_sql_query)  # Let LLM generate SQL query
 ).assign(
     result=itemgetter("query") | RunnableLambda(execute_query)  # Execute SQL Query
 ).assign(
@@ -101,7 +106,7 @@ chain = RunnablePassthrough.assign(
 )
 
 # ✅ Step 9: Run the Chain
-user_question = "What are the key points of the above project?"
+user_question = "What were the key discussion points in the last meeting?"
 response = chain.invoke({"input": user_question})
 
 print("Bot:", response["final_response"])  # LLM Answer
